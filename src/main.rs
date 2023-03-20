@@ -421,7 +421,7 @@ fn main() {
     let mut y = if bg_color==16 {0} else {image_data.len() - 1};
     let mut current_color = 0;
     let mut previous_command: u8 = 0;
-    let mut command_sequence: Vec<u8> = vec![0];
+    let mut command_sequence: Vec<u8> = vec![];
     
     for &(next_x, next_y) in &optimized_path_3 {
 
@@ -464,6 +464,9 @@ fn main() {
     };
     let mut writer = BufWriter::new(file);
 
+    // Put an initial blank frame to ensure SwiCC's buffer is prepared.
+    writeln!(writer, "{{}} 2").unwrap();
+    
     // If filling background, write those commands.
     if bg_color != 16 {
         // Set color
@@ -531,5 +534,9 @@ fn main() {
         }
         writeln!(writer, "{{{}}} {}", frame_string, frame_count).unwrap();
     }
+
+    // Put an ending blank frame to ensure controller stops.
+    writeln!(writer, "{{}} 2").unwrap();
+
     println!("Result saved to {}", output_path.display());
 }
