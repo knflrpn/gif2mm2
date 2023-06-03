@@ -1,10 +1,13 @@
+// This program converts a GIF file to a sequence of commands for the SwiCC device
+// to draw as a comment in Super Mario Maker 2.
+
 use std::collections::HashMap;
 use std::env;
 use std::fs::{File};
 use std::path::{Path};
 use std::io::{BufWriter, Write};
 
-
+// Button bitmasks
 const C_A: u8 = 1<<0;
 const C_L: u8 = 1<<1;
 const C_R: u8 = 1<<2;
@@ -12,6 +15,11 @@ const C_U: u8 = 1<<3;
 const C_D: u8 = 1<<4;
 const C_L2: u8 = 1<<5;
 const C_R2: u8 = 1<<6;
+
+fn calculate_coord_cost(sequence_length: usize, x: i16, y: i16) -> i16 {
+    return (sequence_length as f32 * 1.7) as i16 + x*1 + y*1;
+}
+
 
 fn get_color_dist(current: u8, desired: u8) -> i8 {
     let mut move_dist = desired as i8 - current as i8;
@@ -24,78 +32,175 @@ fn get_color_dist(current: u8, desired: u8) -> i8 {
     move_dist
 }
 
-fn get_color_change_commands(d_color: i8, prev_cmd: u8) -> Vec<u8> {
+// get the commands to change the color
+// color_delta is the difference between the desired color and the current color
+// prev_cmd is the previous command
+fn get_color_change_commands(color_delta: i8, prev_cmd: u8) -> Vec<u8> {
     let mut moves = vec![];
-    if ((prev_cmd & C_R2) != 0) || ((prev_cmd & C_L2) != 0) {
-        // Moved color previous frame; need to skip a frame
-        moves.push(0);
+    if color_delta == 0 {
+        return moves;
     }
-    let mut need = d_color;
-    if need > 0 { // color right
-        while need != 0 {
-            moves.push(C_R2);
+    let mut add_blank = prev_cmd & (C_R2 | C_L2) != 0;
+    let mut need = color_delta;
+    while need != 0 {
+        if add_blank {
+            // Moved color previous frame; need to skip a frame
             moves.push(0);
-            need -= 1;
         }
-    }
-    else { // color left
-        while need != 0 {
+        add_blank = true;
+        if need > 0 { // color right
+            moves.push(C_R2);
+            need -= 1;
+        } else { // color left
             moves.push(C_L2);
-            moves.push(0);
             need += 1;
         }
     }
-    if moves.len() >= 2 {
-        moves.pop(); // Remove trailing blank
-    }
     moves
 }
 
-fn get_move_commands(d_x: isize, d_y: isize, prev_cmd: u8) -> Vec<u8> {
-    let mut moves: Vec<u8> = vec![];
-    let mut mdx = d_x;
-    let mut mdy = d_y;
-    let mut skipped: u8 = 0;
-    let mut last_add = prev_cmd & (C_L | C_R | C_U | C_D);
+// function to translate command bitmask into string
+fn cmd_to_string(cmd: u8) -> String {
+    let mut s = String::new();
+    if (cmd & C_A) != 0 {
+        s.push_str("A ");
+    }
+    if (cmd & C_L) != 0 {
+        s.push_str("L ");
+    }
+    if (cmd & C_R) != 0 {
+        s.push_str("R ");
+    }
+    if (cmd & C_U) != 0 {
+        s.push_str("U ");
+    }
+    if (cmd & C_D) != 0 {
+        s.push_str("D ");
+    }
+    if (cmd & C_L2) != 0 {
+        s.push_str("L2 ");
+    }
+    if (cmd & C_R2) != 0 {
+        s.push_str("R2 ");
+    }
+    s
+}
 
-    while mdx != 0 || mdy != 0 {
-        // For each direction, add the command if needed, if possible, and if
-        // that direction needs more than the other direction.
-        if mdx > 0 && last_add != C_R && (mdx.abs() >= mdy.abs()) {
-            moves.push(C_R);
-            last_add = C_R;
-            mdx -= 1;
-            skipped = 0;
-        } else { skipped += 1; }
-        if mdx < 0 && last_add != C_L && (mdx.abs() >= mdy.abs()) {
-            moves.push(C_L);
-            last_add = C_L;
-            mdx += 1;
-            skipped = 0;
-        } else { skipped += 1; }
-        if mdy > 0 && last_add != C_D && (mdy.abs() >= mdx.abs()) {
-            moves.push(C_D);
-            last_add = C_D;
-            mdy -= 1;
-            skipped = 0;
-        } else { skipped += 1; }
-        if mdy < 0 && last_add != C_U && (mdy.abs() >= mdx.abs()) {
-            moves.push(C_U);
-            last_add = C_U;
-            mdy += 1;
-            skipped = 0;
-        } else { skipped += 1; }
-        // Wasn't able to move; must need a buffer
-        if skipped >= 4 {
-            moves.push(0);
-            last_add = 0;
-            skipped = 0;
+// finds the closest pixel to the given pixel that has not been drawn yet
+fn closest_undrawn_points(x: i16, y: i16, max_dist: i16, min_count: i16, drawn_pixels: &HashMap<(i16, i16), bool>) -> Vec<(i16, i16)> {
+    let max_dist = if max_dist>320 {320} else {max_dist};
+    let mut points = vec![];
+    let mut got_count = 0;
+
+    for d in 1..max_dist {
+        for i in 0..d {
+            let test_points = [
+                (x+d-i, y+i),
+                (x-i, y+d-i),
+                (x-d+i, y-i),
+                (x+i, y-d+i),
+            ];
+
+            for &(nx, ny) in &test_points {
+                if !drawn_pixels.get(&(nx, ny)).unwrap_or(&true) {
+                    points.push((nx, ny));
+                    got_count += 1;
+                }
+            }
+        }
+        if got_count >= min_count {
+            break;
+        }
+    }
+    points
+}
+
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+struct CacheKey {
+    pixel_offset_x: i16,
+    pixel_offset_y: i16,
+    color_delta: i8,
+    prev_cmd: u8,
+}
+
+// The value stored in the command cache.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+struct CacheValue {
+    result: Vec<u8>,
+}
+
+// The command cache.
+#[derive(Debug, Clone)]
+struct CommandCache {
+    cache: HashMap<CacheKey, CacheValue>,
+}
+
+// Functionality to store and retrieve command sequences from the cache.
+impl CommandCache {
+    fn new() -> Self {
+        CommandCache {
+            cache: HashMap::new(),
         }
     }
 
-    moves
+    fn get_result(&mut self, pixel_offset_x: i16, pixel_offset_y: i16, color_delta: i8, prev_cmd: u8) -> Vec<u8> {
+        let key = CacheKey {
+            pixel_offset_x,
+            pixel_offset_y,
+            color_delta,
+            prev_cmd,
+        };
+
+        // If the distance is small enough and result is in the cache, clone it and return it.
+        if std::cmp::max(pixel_offset_x.abs(), pixel_offset_y.abs()) < 16 {
+            if let Some(value) = self.cache.get(&key) {
+                return value.result.clone();
+            }
+            // Otherwise, compute the result, store it in the cache, and return it.
+            let result = derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
+            if result.len() < 35 { // unlikely to need to reuse long commands, so don't cache them
+                let value = CacheValue { result: result.clone() };
+                self.cache.insert(key, value);
+            }
+
+            return result;
+        }
+
+        // If distance is too large, just return computed sequence without chaching.
+        return derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
+ 
+    }
 }
 
+// Derive the commands to get to and draw a pixel.
+// pixel_offset_x and pixel_offset_y are the offset of the pixel from the previous pixel.
+// color_delta is the difference between the desired color and the current color.
+// prev_cmd is the previous command.
+fn derive_commands(pixel_offset_x: i16, pixel_offset_y: i16, color_delta: i8, prev_cmd: u8) -> Vec<u8> {
+    let move_commands: Vec<u8> = get_move_commands(pixel_offset_x, pixel_offset_y, prev_cmd);
+    let color_commands: Vec<u8> = get_color_change_commands(color_delta, prev_cmd);
+    // Combine the commands into a single command list.
+    let mut full_commands: Vec<u8> = elementwise_or(&move_commands, &color_commands);
+    // Check if C_A is in the previous frame and there is only one new frame.
+    if (full_commands.len() == 1) && (prev_cmd & C_A != 0) {
+        // If C_L2 or C_R2 is in the new frame, need to release A otherwise it changes the previous pixel color.
+        if full_commands[0] & (C_L2 | C_R2) != 0 {
+            full_commands.push(0);
+        }
+    }
+    // Add C_A to last frame
+    if full_commands.len() == 0 {
+        full_commands.push(C_A);
+    } else {
+        let final_index = full_commands.len() - 1;
+        full_commands[final_index] += C_A;
+    }
+
+    full_commands
+}
+
+// Returns the bitwise OR of two vectors, padding with 0s if necessary.
 fn elementwise_or(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut result = Vec::with_capacity(std::cmp::max(a.len(), b.len()));
 
@@ -108,221 +213,374 @@ fn elementwise_or(a: &[u8], b: &[u8]) -> Vec<u8> {
     result
 }
 
-fn get_commands(d_x: isize, d_y: isize, d_color: i8, prev_cmd: u8) -> Vec<u8> 
-{
-    let move_commands: Vec<u8> = get_move_commands(d_x, d_y, prev_cmd);
-    let color_commands: Vec<u8> = get_color_change_commands(d_color, prev_cmd);
-    // Combine the commands into a single command list.
-    let mut full_commands: Vec<u8> = elementwise_or(&move_commands, &color_commands);
-    // Check if C_A is in the previous frame and there is only one new frame.
-    if (full_commands.len() == 1) && (prev_cmd & C_A != 0) {
-        // If C_L2 or C_R2 is in the new frame, need to release A otherwise it changes the previous pixel color.
-        if full_commands[0] & (C_L2 | C_R2) != 0 {
-            full_commands.push(0);
+// Returns the commands to move to the pixel.
+// d_x and d_y are the position offset.
+// prev_cmd is the previous command.
+fn get_move_commands(d_x: i16, d_y: i16, prev_cmd: u8) -> Vec<u8> {
+    let mut commands = Vec::new();
+    let mut d_x = d_x;
+    let mut potential_x = 0;
+    let mut d_y = d_y;
+    let mut potential_y = 0;
+    let mut last_cmd = prev_cmd;
+
+    while d_x != 0 || d_y != 0 {
+        let (mut potential_cmd_x, mut potential_cmd_y) = (0, 0);
+        let mut progress = false;
+
+        // Check if need to move in x-direction
+        if (d_x > 0) && ((C_R & last_cmd) == 0) {
+            potential_cmd_x = C_R;
+            potential_x = 1;
+        } else if (d_x < 0) && ((C_L & last_cmd) == 0) {
+            potential_cmd_x = C_L;
+            potential_x = -1;
+        }
+
+        // Check if need to move in y-direction
+        if (d_y < 0) && ((C_U & last_cmd) == 0){
+            potential_cmd_y = C_U;
+            potential_y = -1;
+        } else if (d_y > 0) && ((C_D & last_cmd) == 0) {
+            potential_cmd_y = C_D;
+            potential_y = 1;
+        }
+
+        if d_y.abs() > d_x.abs() {
+            // Move in y-direction first if needed
+            if potential_cmd_y != 0 {
+                commands.push(potential_cmd_y);
+                d_y -= potential_y;
+                last_cmd = potential_cmd_y;
+                progress = true;
+            }
+            // Then in x-direction
+            if potential_cmd_x != 0 {
+                commands.push(potential_cmd_x);
+                d_x -= potential_x;
+                last_cmd = potential_cmd_x;
+                progress = true;
+            }
+        } else {
+            // Move in x-direction first if needed
+            if potential_cmd_x != 0 {
+                commands.push(potential_cmd_x);
+                d_x -= potential_x;
+                last_cmd = potential_cmd_x;
+                progress = true;
+            }
+            // Then in y-direction
+            if potential_cmd_y != 0 {
+                commands.push(potential_cmd_y);
+                d_y -= potential_y;
+                last_cmd = potential_cmd_y;
+                progress = true;
+            }
+        }
+        if !progress {
+            // No progress made; need to queue a blank command
+            commands.push(0);
+            last_cmd = 0;
         }
     }
-    // Add C_A to final frame
-    if full_commands.len() == 0 {
-        full_commands.push(C_A);
+
+    commands
+}
+
+fn get_next_coord(current_x: i16, current_y: i16, current_color: u8, prev_cmd: u8, frame_buffer: &[[u8; 180]; 320], drawn_pixels: &HashMap<(i16, i16), bool>, cache: &mut CommandCache) -> Option<(i16, i16)> {
+    // Search only nearby first.
+    let potential_coords = closest_undrawn_points(current_x, current_y, 5, 100, drawn_pixels);
+    // If no points found, expand search area.
+    let potential_coords = if potential_coords.len() == 0 { closest_undrawn_points(current_x, current_y, 16, 100, drawn_pixels) } else { potential_coords };
+    // If no points found, search entire image.
+    let potential_coords = if potential_coords.len() == 0 { closest_undrawn_points(current_x, current_y, 320, 200, drawn_pixels) } else { potential_coords };
+    // If no points found, no points left to draw.
+    if potential_coords.len() == 0 {
+        return None;
+    }
+
+    // Initialize the best point and cost to be the first point.
+    let mut best_point = potential_coords[0];
+    let color_delta = get_color_dist(current_color, frame_buffer[best_point.0 as usize][best_point.1 as usize]);
+    let mut sequence_length = cache.get_result(best_point.0 - current_x, best_point.1 - current_y, color_delta, prev_cmd).len();
+    let mut min_cost = calculate_coord_cost(sequence_length, best_point.0, best_point.1);
+
+    // For each undrawn point...
+    for &(x, y) in &potential_coords {
+        // Calculate the color delta and previous command based on your specific scenario.
+        let color_delta = get_color_dist(current_color, frame_buffer[x as usize][y as usize]);
+        // Get the command sequence from the cache (this will also calculate and cache the sequence if it's not already cached).
+        sequence_length = cache.get_result(x - current_x, y - current_y, color_delta, prev_cmd).len();
+        // Calculate the cost.
+        let cost = calculate_coord_cost(sequence_length, x, y);
+
+        // If the cost of reaching this point is less than the cost of reaching the best point found so far...
+        if cost < min_cost {
+            // Update the best point and minimum cost.
+            best_point = (x, y);
+            min_cost = cost;
+        }
+    }
+
+    // Return the best point found.
+    Some(best_point)
+
+}
+
+fn rearrange_pixels(visit_order: &mut Vec<(i16, i16)>, isolated_block_size: usize, isolation_distance: i16) {
+
+    let mut isolated_blocks: Vec<Vec<(i16, i16)>> = Vec::new();
+
+    let mut i = 0;
+    while i < visit_order.len() {
+        let start_index = i;
+        let mut end_index = i;
+        let (mut prev_x, mut prev_y) = visit_order[i];
+
+        // Find the end index of the isolated block
+        while end_index < visit_order.len() - 1 {
+            let (next_x, next_y) = visit_order[end_index + 1];
+            let x_dist = (next_x - prev_x).abs();
+            let y_dist = (next_y - prev_y).abs();
+
+            if x_dist > isolation_distance || y_dist > isolation_distance {
+                break;
+            }
+
+            prev_x = next_x;
+            prev_y = next_y;
+            end_index += 1;
+        }
+
+        let block_size = end_index - start_index + 1;
+
+        // Check if the isolated block meets the criteria
+        if block_size <= isolated_block_size {
+            let block = visit_order.drain(start_index..=end_index).collect();
+            isolated_blocks.push(block);
+            i = start_index; // Start over from the same index since we removed elements
+        } else {
+            i = end_index + 1; // Continue from the next index
+        }
+    }
+
+    // Reinsert the isolated blocks near existing coordinates
+    for block in isolated_blocks {
+        let nearest_index = find_nearest_index(&visit_order, &block[0]);
+        visit_order.splice(nearest_index..nearest_index, block);
+    }
+}
+
+fn find_nearest_index(visit_order: &Vec<(i16, i16)>, coord: &(i16, i16)) -> usize {
+    let mut nearest_index = 0;
+    let mut min_distance = i16::MAX;
+
+    for (j, &(visit_x, visit_y)) in visit_order.iter().enumerate() {
+        let distance = std::cmp::max((coord.0 - visit_x).abs(), (coord.1 - visit_y).abs());
+        
+        if j < visit_order.len() - 1 {
+            let next_coord = visit_order[j + 1];
+            let next_distance = std::cmp::max((next_coord.0 - visit_x).abs(), (next_coord.1 - visit_y).abs());
+            if distance < min_distance && next_distance >= 2 {
+                min_distance = distance;
+                nearest_index = j;
+            }
+        }
+    }
+    
+    nearest_index
+}
+
+
+
+fn generate_and_search_permutations(
+    current_permutation: &mut Vec<(i16, i16)>,
+    remaining_coords: &[(i16, i16)],
+    current_cost: i16,
+    optimal_cost: &mut i16,
+    optimal_permutation: &mut Option<Vec<(i16, i16)>>,
+    start_coord: (i16, i16),
+    end_coord: (i16, i16),
+    frame_buffer: &[[u8; 180]; 320],
+    cache: &mut CommandCache,
+    prev_cmd: u8,
+) {
+    // Calculate the lower bound of the cost for the remaining coordinates
+    let lower_bound = (remaining_coords.len() as f32 * 1.5) as i16;
+
+    // If the lower bound of the cost added to the current cost is already greater than the optimal cost, prune this branch
+    if current_cost + lower_bound >= *optimal_cost {
+        return;
+    }
+
+    // If there are no remaining coordinates, calculate the cost for moving from the last middle coordinate to the end coordinate, and update the optimal cost and permutation if necessary
+    if remaining_coords.is_empty() {
+        let last_middle_coord = *current_permutation.last().unwrap();
+        let temp_color = frame_buffer[last_middle_coord.0 as usize][last_middle_coord.1 as usize];
+        let last_color = frame_buffer[end_coord.0 as usize][end_coord.1 as usize];
+        let last_commands = cache.get_result(
+            end_coord.0 - last_middle_coord.0,
+            end_coord.1 - last_middle_coord.1,
+            get_color_dist(temp_color, last_color),
+            prev_cmd,
+        );
+        let cost = current_cost + last_commands.len() as i16;
+
+        if cost < *optimal_cost {
+            *optimal_cost = cost;
+            *optimal_permutation = Some(current_permutation.clone());
+        }
+
+        return;
+    }
+
+    // For each remaining coordinate, add it to the current permutation, calculate the new cost, and recurse
+    for (index, &coord) in remaining_coords.iter().enumerate() {
+        let mut new_remaining_coords = remaining_coords.to_vec();
+        new_remaining_coords.remove(index);
+        
+        let temp_x = if current_permutation.is_empty() { start_coord.0 } else { current_permutation.last().unwrap().0 };
+        let temp_y = if current_permutation.is_empty() { start_coord.1 } else { current_permutation.last().unwrap().1 };
+        let temp_color = frame_buffer[temp_x as usize][temp_y as usize];
+        let next_color = frame_buffer[coord.0 as usize][coord.1 as usize];
+
+        let commands = cache.get_result(
+            coord.0 - temp_x,
+            coord.1 - temp_y,
+            get_color_dist(temp_color, next_color),
+            prev_cmd,
+        );
+
+        let new_cost = current_cost + commands.len() as i16;
+        let new_prev_cmd = *commands.last().unwrap();
+        
+        current_permutation.push(coord);
+
+        generate_and_search_permutations(
+            current_permutation,
+            &new_remaining_coords,
+            new_cost,
+            optimal_cost,
+            optimal_permutation,
+            start_coord,
+            end_coord,
+            frame_buffer,
+            cache,
+            new_prev_cmd,
+        );
+
+        current_permutation.pop();
+    }
+}
+
+fn optimize_segment(
+    visit_order: &mut Vec<(i16, i16)>,
+    index: usize,
+    length: usize,
+    frame_buffer: &[[u8; 180]; 320],
+    cache: &mut CommandCache,
+) {
+    if length <= 3 { // This won't change anything.
+        return;
+    }
+    let start_coord = visit_order[index];
+    let end_coord = visit_order[index + length - 1];
+    let middle_coords = visit_order[index + 1..index + length - 1].to_vec();
+
+    // Get previous-previous command
+    let prev_prev_cmd = if index < 1 {
+        0
     } else {
-        let final_index = full_commands.len() - 1;
-        full_commands[final_index] += C_A;
+        let prev_coord = visit_order[index];
+        let prev_prev_coord = visit_order[index - 1];
+        let prev_color = frame_buffer[prev_coord.0 as usize][prev_coord.1 as usize];
+        let prev_prev_color = frame_buffer[prev_prev_coord.0 as usize][prev_prev_coord.1 as usize];
+        let commands = cache.get_result(
+            prev_coord.0 - prev_prev_coord.0,
+            prev_coord.1 - prev_prev_coord.1,
+            get_color_dist(prev_prev_color, prev_color),
+            C_A, //constant
+        );
+        *commands.last().unwrap()
+    };
+
+    let mut optimal_permutation: Option<Vec<(i16, i16)>> = None;
+    let mut optimal_cost = i16::MAX;
+    let mut current_permutation = vec![];
+
+    generate_and_search_permutations(
+        &mut current_permutation,
+        &middle_coords,
+        0,
+        &mut optimal_cost,
+        &mut optimal_permutation,
+        start_coord,
+        end_coord,
+        frame_buffer,
+        cache,
+        prev_prev_cmd,
+    );
+
+    // Update the visit_order with the optimal permutation
+    if let Some(middle_permutation) = optimal_permutation {
+        let new_order = [start_coord]
+            .iter()
+            .cloned()
+            .chain(middle_permutation)
+            .chain(std::iter::once(end_coord))
+            .collect::<Vec<_>>();
+
+        visit_order.splice(index..index + length, new_order);
     }
-
-    full_commands
-
 }
 
-fn calculate_cost(cmd_len: usize, x_pos: usize, y_pos: usize, _start_at_end: bool) -> usize{
-    /* // Option to start at bottom right after filling with a color.
-    (cmd_len * 3)
-        + if start_at_end {(x_pos as isize - 319 as isize).abs() as usize} else {0}
-        + if start_at_end {(y_pos as isize - 179 as isize).abs() as usize} else {0}
-        */
-    (cmd_len * 3) + x_pos + y_pos
-}
 
-fn determine_path(block: &[Vec<u8>], bg_color: u8, cmd_cache: &mut HashMap<(isize, isize, i8, u8), Vec<u8>>, start_at_end: bool)
-    -> Vec<(usize, usize)>
-{
 
-    let mut pixel_sequence: Vec<(usize, usize)> = vec![];
-
-    let mut current_color: u8 = 0;
-    let mut current_x: usize = if start_at_end {block[0].len() - 1} else {0};
-    let mut current_y: usize = if start_at_end {block.len() - 1} else {0};
-
-    let mut prev_cmd: u8 = 0;
-
-    let mut visited_count: usize = 0;
-    let mut visited_map: HashMap<(usize, usize), bool> = HashMap::new();
-    // "Already visited" all pixels with the background color
-    for y in 0..block.len() {
-        for x in 0..block[0].len() {
-            if block[y][x] == bg_color {
-                visited_map.insert((x, y), true);
-                visited_count += 1;
+fn optimize_chunks(
+    visit_order: &mut Vec<(i16, i16)>,
+    gap_distance: i16,
+) {
+    // Break visit_order into chunks
+    let mut chunks: Vec<Vec<(i16, i16)>> = Vec::new();
+    let mut current_chunk: Vec<(i16, i16)> = Vec::new();
+    for i in 0..visit_order.len() {
+        current_chunk.push(visit_order[i]);
+        if i < visit_order.len() - 1 {
+            let curr_pixel = visit_order[i];
+            let next_pixel = visit_order[i + 1];
+            let distance = std::cmp::max((curr_pixel.0 - next_pixel.0).abs(), (curr_pixel.1 - next_pixel.1).abs());
+            if distance > gap_distance {
+                chunks.push(current_chunk.clone());
+                current_chunk.clear();
             }
         }
     }
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
 
-    // Used to print feedback as the block processes
-    let mut next_feedback = visited_count * 10 / (block.len() * block[0].len()) * 10 + 10;
-
-
-    while visited_count < block.len() * block[0].len() {
-        if visited_count * 10 / (block.len() * block[0].len()) * 10 >= next_feedback {
-            println!("Path calculated for {}% of image.", next_feedback);
-            next_feedback += 10;
-        }
-
-        let mut min_score = std::usize::MAX;
-        let mut min_dist = std::usize::MAX;
-        let mut min_command: Vec<u8> = vec![];
-        let mut next_x = 0;
-        let mut next_y = 0;
-
-        // Define a smaller search area around current coordinate
-        let search_min_x = usize::saturating_sub(current_x, 9);
-        let search_max_x = (current_x + 9).min(block[0].len() - 1);
-        let search_min_y = usize::saturating_sub(current_y, 9);
-        let search_max_y = (current_y + 9).min(block.len() - 1);
-
-        // Greedy algorithm in smaller area
-        for y in search_min_y..=search_max_y {
-            for x in search_min_x..=search_max_x {
-                if !visited_map.contains_key(&(x, y)) {
-                    // Check if in cache, follow up as needed.
-                    let potential = 
-                            match cmd_cache.get(&(x as isize - current_x as isize, y as isize - current_y as isize, block[y][x] as i8 - current_color as i8, prev_cmd)) {
-                            Some(existing) => 
-                                existing.clone(),
-                            None => {
-                                let d_x = x as isize - current_x as isize;
-                                let d_y = y as isize - current_y as isize;
-                                let d_color = get_color_dist(current_color, block[y][x]);
-                                let result = get_commands(d_x, d_y, d_color, prev_cmd);
-                                cmd_cache.insert((d_x, d_y, d_color, prev_cmd), result.clone());
-                                result
-                            }
-                        };
-
-                    let score = calculate_cost(potential.len(), x, y, start_at_end);
-                    if score < min_score {
-                        min_dist = std::cmp::min(min_dist, potential.len());
-                        min_score = score;
-                        min_command = potential.clone();
-                        next_x = x;
-                        next_y = y;
-                    }
-                }
+    // Reassemble visit_order using a greedy algorithm
+    let mut new_visit_order: Vec<(i16, i16)> = chunks.remove(0);
+    while !chunks.is_empty() {
+        let end_coord = new_visit_order.last().unwrap().clone();
+        let mut min_distance = i16::MAX;
+        let mut min_index = 0;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let start_coord = chunk[0];
+            let distance = std::cmp::max((start_coord.0 - end_coord.0).abs(), (start_coord.1 - end_coord.1).abs());
+            if distance < min_distance {
+                min_distance = distance;
+                min_index = i;
             }
         }
-
-        if min_dist > 16 { // Didn't find a short option nearby.
-            min_score = std::usize::MAX;
-            // Greedy algorithm over all pixels in block
-            for y in 0..block.len() {
-                for x in 0..block[0].len() {
-                    if !visited_map.contains_key(&(x, y)) {
-                        // Check if in cache, follow up as needed.
-                        let potential = 
-                            match cmd_cache.get(&(x as isize - current_x as isize, y as isize - current_y as isize, block[y][x] as i8 - current_color as i8, prev_cmd)) {
-                                Some(existing) => 
-                                    existing.clone(),
-                                None => {
-                                    let d_x = x as isize - current_x as isize;
-                                    let d_y = y as isize - current_y as isize;
-                                    let d_color = get_color_dist(current_color, block[y][x]);
-                                    let result = get_commands(d_x, d_y, d_color, prev_cmd);
-                                    cmd_cache.insert((d_x, d_y, d_color, prev_cmd), result.clone());
-                                    result
-                                }
-                            };
-
-                            let score = calculate_cost(potential.len(), x, y, start_at_end);
-                        if score < min_score {
-                            min_score = score;
-                            min_command = potential.clone();
-                            next_x = x;
-                            next_y = y;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add minimum found to commands and update currents
-        prev_cmd = min_command[min_command.len() - 1];
-        pixel_sequence.push((next_x, next_y));
-        current_color = block[next_y][next_x];
-        current_x = next_x;
-        current_y = next_y;
-        // Track the visit
-        visited_map.insert((next_x, next_y), true);
-        visited_count += 1;
-
+        let next_chunk = chunks.remove(min_index);
+        new_visit_order.extend(next_chunk);
     }
 
-    pixel_sequence
+    // Update the visit_order with the new order
+    *visit_order = new_visit_order;
 }
 
-
-fn l1_norm(a: &(usize, usize), b: &(usize, usize)) -> usize {
-    ((a.0 as isize - b.0 as isize).abs() + (a.1 as isize - b.1 as isize).abs()) as usize
-}
-
-fn find_best_insertion_position(new_path: &Vec<(usize, usize)>, isolated_group: &[(usize, usize)]) -> usize {
-    let mut best_position = 0;
-    let mut best_distance = std::usize::MAX;
-
-    for i in 0..new_path.len() - 1 {
-        let distance = l1_norm(&new_path[i], &isolated_group[0]) + l1_norm(&isolated_group[isolated_group.len() - 1], &new_path[i + 1]);
-        if distance < best_distance {
-            best_position = i + 1;
-            best_distance = distance;
-        }
-    }
-
-    best_position
-}
-fn optimize_path(path: Vec<(usize, usize)>, separation: usize) -> Vec<(usize, usize)> {
-    let mut new_path: Vec<(usize, usize)> = vec![];
-    let mut isolated_group: Vec<(usize, usize)> = vec![];
-    let mut isolated_groups: Vec<Vec<(usize, usize)>> = vec![];
-
-    for i in 0..path.len() - 1 {
-        let distance = l1_norm(&path[i], &path[i + 1]);
-
-        // Current pixel is part of this group
-        isolated_group.push(path[i]);
-        // Check if about to have a big jump
-        if distance >= separation {
-            // Check if collected group was short enough to be considered a blip
-            if distance >= (isolated_group.len() * 3) {
-                isolated_groups.push(isolated_group.clone());
-            } else {
-                new_path.extend(isolated_group.iter().cloned());
-            }
-            isolated_group.clear();
-        }
-    }
-
-    // Handle the last group in the sequence
-    isolated_group.push(path[path.len() - 1]);
-    if isolated_group.len() <= separation {
-        isolated_groups.push(isolated_group.clone());
-    } else {
-        new_path.extend(isolated_group.iter().cloned());
-    }
-
-    for group in isolated_groups {
-        let best_position = find_best_insertion_position(&new_path, &group);
-        new_path.splice(best_position..best_position, group.iter().cloned());
-    }
-
-    new_path
-}
 
 fn main() {
     // Parse command line arguments
@@ -332,7 +590,8 @@ fn main() {
         return;
     }
     let input_file = &args[1];
-    let frame_count = if args.len() >= 3 { args[2].parse().unwrap_or(2) } else { 2 };
+    let frames_per_command = if args.len() >= 3 { args[2].parse().unwrap_or(2) } else { 2 };
+    let optimize = if args.len() >= 4 { args[3].parse().unwrap_or(5) } else { 5 };
 
     // Open the input file
     let file = match File::open(input_file) {
@@ -374,86 +633,261 @@ fn main() {
         return;
     }
 
-    // Find most common color index in the range 0-16.
-    let mut color_counts = [0u32; 17];
-    for pixel in frame.buffer.iter() {
-        if *pixel <= 16 {
-            color_counts[*pixel as usize] += 1;
-        } else {
-            eprintln!("Warning: invalid color index found: {}.", *pixel);
-        }
-    }
-    let mut max_count = 0;
-    let mut max_index = 0;
-    for i in 0..17 {
-        if color_counts[i] > max_count {
-            max_count = color_counts[i];
-            max_index = i;
+	// Reformat frame buffer into a 2-D array for easier access.
+    let mut frame_buffer = [[0u8; 180]; 320];
+    for x in 0..320 {
+        for y in 0..180 {
+            frame_buffer[x][y] = frame.buffer[y*320 + x];
         }
     }
 
-    let bg_color: u8 = 
-            if max_count > (320*180/12) { // Requre at least 1/12 of pixels to be that color to use as fill.
-                println!("Using common color index ({}) as background.", max_index);
-                max_index as u8
-            } else {
-                println!("Using white background.");
-                16
-            };
+    // Determine most common background color for each set of eight columns.
+    let mut bg_colors: [u8; 40] = [16; 40]; // Default to white
+    for x in 0..40 { // Image is 320 wide, so 40 sets of 8 columns
+        let mut color_counts: HashMap<u8, usize> = HashMap::new();
+        color_counts.insert(16, 0); // Make sure white is in map
+        // Check each pixel in the 8-column block
+        for x_inner in (x*8)..((x+1)*8) {
+            for y in 0..180 {
+                let color = frame_buffer[x_inner][y];
+                let count = color_counts.entry(color).or_insert(0);
+                *count += 1;
+            }
+        }
+        // Only change bg color if there is a clear winner over white.
+        if color_counts[&16] < (180*8/3) {
+            let mut max_count = 0;
+            let mut max_index = 0;
+            for (index, count) in color_counts {
+                if count > max_count {
+                    max_count = count;
+                    max_index = index;
+                }
+            }
+            if max_count > (180*8/10) { // Require at least 10% of pixels to be new color
+                bg_colors[x] = max_index;
+            }
+        }
+    }
 
-    // Reformat data into 2D array
-    let image_data = frame.buffer.chunks(frame.width as usize)
-        .map(|row| row.to_vec())
-        .collect::<Vec<_>>();
-
-
-    // This hash will save command sequences based on dx, dy, dcolor, and prev_cmd
-    let mut cmd_cache: HashMap<(isize, isize, i8, u8), Vec<u8>> = HashMap::new();
-    // Process the image 
-    let initial_path = determine_path(&image_data, bg_color, &mut cmd_cache, bg_color!=16);
-    // Try some optimization
-    let optimized_path = optimize_path(initial_path, 16);
-    let optimized_path_2 = optimize_path(optimized_path, 13);
-    let optimized_path_3 = optimize_path(optimized_path_2, 10);
-    
-    // Convert to command sequence
-    let mut x = if bg_color==16 {0} else {image_data[0].len() - 1};
-    let mut y = if bg_color==16 {0} else {image_data.len() - 1};
+    // Keep track of drawing
+    let mut total_frames = 0;
+    let mut current_x: i16 = 0;
+    let mut current_y: i16 = 0;
+    let mut prev_cmd = 0;
     let mut current_color = 0;
-    let mut previous_command: u8 = 0;
-    let mut command_sequence: Vec<u8> = vec![];
-    
-    for &(next_x, next_y) in &optimized_path_3 {
+    let mut num_to_draw = 320*180;
 
-        let d_x = next_x as isize - x as isize;
-        let d_y = next_y as isize - y as isize;
-        let next_color = image_data[next_y][next_x];
-        let d_color = get_color_dist(current_color, next_color);
-        let key = (d_x, d_y, d_color, previous_command);
-        let cmds = cmd_cache.entry(key).or_insert_with(|| {
-            get_commands(d_x, d_y, d_color, previous_command)
-        });
-        command_sequence.append(&mut cmds.clone());
-        previous_command = *cmds.last().unwrap_or(&0);
-        x = next_x;
-        y = next_y;
-        current_color = next_color;
+    // Create output string
+    let mut output_string = String::new();
+
+
+    // Add initial commands to the output string to fill any column blocks that aren't white.
+    let need_any_fill = bg_colors.iter().any(|&x| x != 16);
+    if need_any_fill {
+        let mut going_down = true;
+        // Add initial pen size change and move right four pixels.
+        output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
+        let mut need_x = 0;
+        current_x = 4;
+        // Go over each column block
+        for x in 0..40 {
+            let color = bg_colors[x];
+            if color != 16 { // Not white
+                let color_delta = get_color_dist(current_color, color);
+                let color_change_commands = get_color_change_commands(color_delta, prev_cmd);
+                for cmd in color_change_commands {
+                    // While changing color, also move right if needed.
+                    if (need_x > 0) && ((prev_cmd & C_R) == 0) {
+                        prev_cmd = cmd | C_R;
+                        need_x -= 1;
+                        current_x += 1;
+                    } else {
+                        prev_cmd = cmd;
+                    }
+                    // Add button string enclosed in curly brackets to output string.
+                    output_string.push_str(&format!("{{{}}} {}\n", cmd_to_string(prev_cmd), frames_per_command));
+                    total_frames += frames_per_command;
+                }
+                current_color = color;
+                // If still need to move right, do so, ensuring that there are not consecutive C_R commands.
+                while need_x > 0 {
+                    if prev_cmd & C_R == 0 {
+                        prev_cmd = C_R;
+                        need_x -= 1;
+                        current_x += 1;
+                    } else {
+                        prev_cmd = 0;
+                    }
+                    output_string.push_str(&format!("{{{}}} {}\n", cmd_to_string(prev_cmd), frames_per_command));
+                    total_frames += frames_per_command;
+                }
+
+                // Press A to begin painting
+                output_string.push_str(&format!("{{{}}} {}\n", cmd_to_string(C_A), frames_per_command));
+                // Hold A while moving cursor up or down for 90 frames.
+                if going_down {
+                    output_string.push_str(&"{A} 90 128 255\n");
+                    current_y = 179;
+                } else {
+                    output_string.push_str(&"{A} 90 128 0\n");
+                    current_y = 0;
+                }
+                prev_cmd = C_A;
+                total_frames += frames_per_command + 90;
+                going_down = !going_down;
+            }
+            // Going to next block requires x offset 8
+            need_x += 8;
+        }
+        // Put pen back small
+        output_string.push_str(&format!("{{L1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{L1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{L1}} {}\n", frames_per_command));
+        output_string.push_str(&format!("{{}} {}\n", frames_per_command));
+        prev_cmd = 0;
     }
 
-    // Count how many frames this is going to take.
-    let num_frames = command_sequence.len() * frame_count + if bg_color != 16 {3600} else {0};
-    let total_seconds = (num_frames as f32 / 60f32).round() as u32;
+
+    // Create a HashMap with the x,y coordinate as the key and whether or not it has been drawn as the value.
+    let mut drawn_pixels: HashMap<(i16, i16), bool> = HashMap::new();
+    // Check each pixel in frame_buffer and if its color is the background color for that column block, mark it as drawn.
+    for x_outer in 0..40 {
+        for x_inner in 0..8 {
+            let x = x_outer * 8 + x_inner;
+            for y in 0..180 {
+                let color = frame_buffer[x][y];
+                if color == bg_colors[x_outer] {
+                    drawn_pixels.insert((x as i16, y as i16), true);
+                    num_to_draw -= 1;
+                } else {
+                    drawn_pixels.insert((x as i16, y as i16), false);
+                }
+            }
+        }
+    }
+
+    // Create a cache for known commands using CommandCache
+    let mut cache = CommandCache::new();
+
+    // Create a vector of coordinates to visit.
+    let mut visit_order: Vec<(i16, i16)> = Vec::new();
+
+    let mut temp_color = current_color;
+    let mut temp_x = current_x;
+    let mut temp_y = current_y;
+    let mut next_print_percentage = 80;
+    while num_to_draw > 0 {
+        // Find the best next pixel to the current position that has not been drawn.  If None, break.
+        let next_coord = get_next_coord(temp_x, temp_y, temp_color, prev_cmd, &frame_buffer, &drawn_pixels, &mut cache);
+        if next_coord.is_none() {
+            println!("Warning: too few pixels drawn, but no next pixel found.");
+            break;
+        }
+        let next_coord = next_coord.unwrap();
+        // Add the next coordinate to the vector of coordinates to visit.
+        visit_order.push(next_coord);
+        // Mark the closest coordinate as drawn.
+        drawn_pixels.insert(next_coord, true);
+
+        // Update state
+        let next_color = frame_buffer[next_coord.0 as usize][next_coord.1 as usize];
+        // prev_cmd becomes last commands of cache result
+        prev_cmd = *cache.get_result(next_coord.0 - temp_x, next_coord.1 - temp_y, get_color_dist(temp_color, next_color), prev_cmd).last().unwrap();
+        temp_x = next_coord.0;
+        temp_y = next_coord.1;
+        temp_color = next_color;
+        num_to_draw -= 1;
+        // If percentage of pixels drawn has decreased enough, print feedback.
+        let current_percentage = num_to_draw * 100 / (320*180);
+        if current_percentage < next_print_percentage {
+            println!("{}% remaining.", next_print_percentage);
+            next_print_percentage -= 20;
+        }
+    }
+
+    // Rearrange chunks of pixels.
+    optimize_chunks(&mut visit_order, 30);
+    // Go over the sequence of pixels to find isolated blocks and reinsert them at better locations.
+    rearrange_pixels(&mut visit_order, 10, 6);
+    rearrange_pixels(&mut visit_order, 25, 6);
+
+
+
+    if optimize >= 8 {
+        // Try some brute force optimization
+        let length = optimize * 3 / 5;
+        println!("Optimizing sequence length {}.", length);
+        let mut last_feedback_percentage = 0;
+        let mut index = 0;
+        while index < visit_order.len() - length {
+            optimize_segment(&mut visit_order, index, length, &frame_buffer, &mut cache);
+            // Print feedback once in a while.
+            let feedback_percentage = index * 100 / (visit_order.len() - length);
+            if feedback_percentage >= (last_feedback_percentage + 20) {
+                println!("Optimization {}% complete", feedback_percentage);
+                last_feedback_percentage = feedback_percentage;
+            }
+            index += 1;
+        }                
+    }
+
+    if optimize >= 4 {
+        // Try some brute force optimization
+        let length = optimize;
+        println!("Optimizing sequence length {}.", length);
+        let mut last_feedback_percentage = 0;
+        let mut index = 0;
+        while index < visit_order.len() - length {
+            optimize_segment(&mut visit_order, index, length, &frame_buffer, &mut cache);
+            // Print feedback once in a while.
+            let feedback_percentage = index * 100 / (visit_order.len() - length);
+            if feedback_percentage >= (last_feedback_percentage + 20) {
+                println!("Optimization {}% complete", feedback_percentage);
+                last_feedback_percentage = feedback_percentage;
+            }
+            index += length / 2;
+        }                
+    }
+
+    // Convert the sequence of coordinates to a sequence of commands and add to output string.
+    let mut prev_cmd = 0;
+    for coord in &visit_order {
+        let color = frame_buffer[coord.0 as usize][coord.1 as usize];
+        let color_delta = get_color_dist(current_color, color);
+        // Get command sequence for this coordinate from the cache.
+        let commands = cache.get_result(coord.0 - current_x, coord.1 - current_y, color_delta, prev_cmd);
+        // Update state
+        prev_cmd = *commands.last().unwrap();
+        current_x = coord.0;
+        current_y = coord.1;
+        current_color = color;
+        // Add button string enclosed in curly brackets to output string.
+        for cmd in commands {
+            output_string.push_str(&format!("{{{}}} {}\n", cmd_to_string(cmd), frames_per_command));
+            total_frames += frames_per_command;
+        }
+    }
 
     // Save the result to a text file with the same name as the input file and the time.
     let input_path = Path::new(input_file);
+    let total_seconds = (total_frames as f32 / 60f32).round() as u32;
     let runtime_minutes = total_seconds / 60;
     let runtime_seconds = total_seconds % 60;
-    println!("Drawing is approximately {}:{}.", runtime_minutes, runtime_seconds);
+    println!("Drawing is approximately {}m {}s.", runtime_minutes, runtime_seconds);
     let output_filename = format!("{}_{}m_{}s_{}fpc.txt", 
             input_path.file_stem().unwrap().to_str().unwrap(), 
             runtime_minutes as usize,
             runtime_seconds as usize,
-            frame_count );
+            frames_per_command );
     let output_path = input_path.with_file_name(output_filename);
     let file = match std::fs::File::create(&output_path) {
         Ok(f) => f,
@@ -463,80 +897,12 @@ fn main() {
         }
     };
     let mut writer = BufWriter::new(file);
-
-    // Put an initial blank frame to ensure SwiCC's buffer is prepared.
-    writeln!(writer, "{{}} 2").unwrap();
-    
-    // If filling background, write those commands.
-    if bg_color != 16 {
-        // Set color
-        for _ in 0..bg_color {
-            writeln!(writer, "{{R2}} {}", frame_count).unwrap();
-            writeln!(writer, "{{}} {}", frame_count).unwrap();
+    match writer.write_all(output_string.as_bytes()) {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("Error writing output file: {}", e);
+            return;
         }
-        // Set large cursor and move down 3 pixels
-        for _ in 0..3 {
-            writeln!(writer, "{{D}} {}", frame_count).unwrap();
-            writeln!(writer, "{{R1}} {}", frame_count).unwrap();
-        }
-        writeln!(writer, "{{A}} {}", frame_count).unwrap();
-        for _ in 0..11 {
-            writeln!(writer, "{{A}} 170 255").unwrap();
-            for _ in 0..8 {
-                writeln!(writer, "{{A D}} {}", frame_count).unwrap();
-                writeln!(writer, "{{A}} {}", frame_count).unwrap();
-            }
-            writeln!(writer, "{{A}} 170 1").unwrap();
-            for _ in 0..8 {
-                writeln!(writer, "{{A D}} {}", frame_count).unwrap();
-                writeln!(writer, "{{A}} {}", frame_count).unwrap();
-            }
-        }
-        writeln!(writer, "{{A}} 170 255").unwrap();
-        // Reset color
-        for _ in 0..bg_color {
-            writeln!(writer, "{{L2}} {}", frame_count).unwrap();
-            writeln!(writer, "{{}} {}", frame_count).unwrap();
-        }
-        // Reset cursor
-        for _ in 0..3 {
-            writeln!(writer, "{{L1}} {}", frame_count).unwrap();
-            writeln!(writer, "{{}} {}", frame_count).unwrap();
-        }
-        // Return home
-        writeln!(writer, "{{}} 4 255 255").unwrap();
-
     }
 
-    // Write the commands.
-    for line in command_sequence {
-        let mut frame_string = String::new();
-        if line & C_L != 0 {
-            frame_string += "L ";
-        }
-        if line & C_R != 0 {
-            frame_string += "R ";
-        }
-        if line & C_U != 0 {
-            frame_string += "U ";
-        }
-        if line & C_D != 0 {
-            frame_string += "D ";
-        }
-        if line & C_L2 != 0 {
-            frame_string += "L2 ";
-        }
-        if line & C_R2 != 0 {
-            frame_string += "R2 ";
-        }
-        if line & C_A != 0 {
-            frame_string += "A ";
-        }
-        writeln!(writer, "{{{}}} {}", frame_string, frame_count).unwrap();
-    }
-
-    // Put an ending blank frame to ensure controller stops.
-    writeln!(writer, "{{}} 2").unwrap();
-
-    println!("Result saved to {}", output_path.display());
 }
