@@ -16,8 +16,8 @@ const C_D: u8 = 1<<4;
 const C_L2: u8 = 1<<5;
 const C_R2: u8 = 1<<6;
 
-fn calculate_coord_cost(sequence_length: usize, x: i16, y: i16) -> i16 {
-    return (sequence_length as f32 * 1.7) as i16 + x*1 + y*1;
+fn calculate_coord_cost(sequence_length: u16, x: i16, y: i16, length_weight: f32) -> u16 {
+    return (sequence_length as f32 * length_weight) as u16 + (x + y) as u16;
 }
 
 
@@ -134,6 +134,7 @@ struct CacheValue {
 #[derive(Debug, Clone)]
 struct CommandCache {
     cache: HashMap<CacheKey, CacheValue>,
+    cost_cache: HashMap<CacheKey, (u16,u8)>,
 }
 
 // Functionality to store and retrieve command sequences from the cache.
@@ -141,6 +142,7 @@ impl CommandCache {
     fn new() -> Self {
         CommandCache {
             cache: HashMap::new(),
+            cost_cache: HashMap::new(),
         }
     }
 
@@ -157,12 +159,12 @@ impl CommandCache {
             if let Some(value) = self.cache.get(&key) {
                 return value.result.clone();
             }
-            // Otherwise, compute the result, store it in the cache, and return it.
+            // Otherwise, compute the result, store it in the caches, and return it.
             let result = derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
-            if result.len() < 35 { // unlikely to need to reuse long commands, so don't cache them
-                let value = CacheValue { result: result.clone() };
-                self.cache.insert(key, value);
-            }
+            let value = CacheValue { result: result.clone() };
+            let cost = (result.len() as u16, result.last().unwrap_or(&0).clone());
+            self.cache.insert(key.clone(), value);
+            self.cost_cache.insert(key, cost);
 
             return result;
         }
@@ -170,6 +172,34 @@ impl CommandCache {
         // If distance is too large, just return computed sequence without chaching.
         return derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
  
+    }
+
+    fn get_cost(&mut self, pixel_offset_x: i16, pixel_offset_y: i16, color_delta: i8, prev_cmd: u8) -> (u16,u8) {
+        let key = CacheKey {
+            pixel_offset_x,
+            pixel_offset_y,
+            color_delta,
+            prev_cmd,
+        };
+
+        // If the distance is small enough and result is in the cache, clone it and return it.
+        if std::cmp::max(pixel_offset_x.abs(), pixel_offset_y.abs()) < 16 {
+            if let Some(cost) = self.cost_cache.get(&key) {
+                return *cost;
+            }
+            // Otherwise, compute the result, store it in the caches, and return it.
+            let result = derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
+            let value = CacheValue { result: result.clone() };
+            let cost = (result.len() as u16, result.last().unwrap_or(&0).clone());
+            self.cache.insert(key.clone(), value);
+            self.cost_cache.insert(key, cost);
+
+            return cost;
+        }
+
+        // If distance is too large, just return computed cost without chaching.
+        let sequence = derive_commands(pixel_offset_x, pixel_offset_y, color_delta, prev_cmd);
+        return (sequence.len() as u16, sequence.last().unwrap_or(&0).clone());
     }
 }
 
@@ -287,7 +317,7 @@ fn get_move_commands(d_x: i16, d_y: i16, prev_cmd: u8) -> Vec<u8> {
     commands
 }
 
-fn get_next_coord(current_x: i16, current_y: i16, current_color: u8, prev_cmd: u8, frame_buffer: &[[u8; 180]; 320], drawn_pixels: &HashMap<(i16, i16), bool>, cache: &mut CommandCache) -> Option<(i16, i16)> {
+fn get_next_coord(current_x: i16, current_y: i16, current_color: u8, prev_cmd: u8, frame_buffer: &[[u8; 180]; 320], drawn_pixels: &HashMap<(i16, i16), bool>, cache: &mut CommandCache, length_weight: f32) -> Option<(i16, i16)> {
     // Search only nearby first.
     let potential_coords = closest_undrawn_points(current_x, current_y, 5, 100, drawn_pixels);
     // If no points found, expand search area.
@@ -302,17 +332,17 @@ fn get_next_coord(current_x: i16, current_y: i16, current_color: u8, prev_cmd: u
     // Initialize the best point and cost to be the first point.
     let mut best_point = potential_coords[0];
     let color_delta = get_color_dist(current_color, frame_buffer[best_point.0 as usize][best_point.1 as usize]);
-    let mut sequence_length = cache.get_result(best_point.0 - current_x, best_point.1 - current_y, color_delta, prev_cmd).len();
-    let mut min_cost = calculate_coord_cost(sequence_length, best_point.0, best_point.1);
+    let mut sequence_length = cache.get_cost(best_point.0 - current_x, best_point.1 - current_y, color_delta, prev_cmd).0;
+    let mut min_cost = calculate_coord_cost(sequence_length, best_point.0, best_point.1, length_weight);
 
     // For each undrawn point...
     for &(x, y) in &potential_coords {
         // Calculate the color delta and previous command based on your specific scenario.
         let color_delta = get_color_dist(current_color, frame_buffer[x as usize][y as usize]);
         // Get the command sequence from the cache (this will also calculate and cache the sequence if it's not already cached).
-        sequence_length = cache.get_result(x - current_x, y - current_y, color_delta, prev_cmd).len();
+        sequence_length = cache.get_cost(x - current_x, y - current_y, color_delta, prev_cmd).0;
         // Calculate the cost.
-        let cost = calculate_coord_cost(sequence_length, x, y);
+        let cost = calculate_coord_cost(sequence_length, x, y, length_weight);
 
         // If the cost of reaching this point is less than the cost of reaching the best point found so far...
         if cost < min_cost {
@@ -396,8 +426,8 @@ fn find_nearest_index(visit_order: &Vec<(i16, i16)>, coord: &(i16, i16)) -> usiz
 fn generate_and_search_permutations(
     current_permutation: &mut Vec<(i16, i16)>,
     remaining_coords: &[(i16, i16)],
-    current_cost: i16,
-    optimal_cost: &mut i16,
+    current_cost: u16,
+    optimal_cost: &mut u16,
     optimal_permutation: &mut Option<Vec<(i16, i16)>>,
     start_coord: (i16, i16),
     end_coord: (i16, i16),
@@ -406,7 +436,7 @@ fn generate_and_search_permutations(
     prev_cmd: u8,
 ) {
     // Calculate the lower bound of the cost for the remaining coordinates
-    let lower_bound = (remaining_coords.len() as f32 * 1.5) as i16;
+    let lower_bound = (remaining_coords.len() as f32 * 1.5) as u16;
 
     // If the lower bound of the cost added to the current cost is already greater than the optimal cost, prune this branch
     if current_cost + lower_bound >= *optimal_cost {
@@ -418,13 +448,13 @@ fn generate_and_search_permutations(
         let last_middle_coord = *current_permutation.last().unwrap();
         let temp_color = frame_buffer[last_middle_coord.0 as usize][last_middle_coord.1 as usize];
         let last_color = frame_buffer[end_coord.0 as usize][end_coord.1 as usize];
-        let last_commands = cache.get_result(
+        let last_commands = cache.get_cost(
             end_coord.0 - last_middle_coord.0,
             end_coord.1 - last_middle_coord.1,
             get_color_dist(temp_color, last_color),
             prev_cmd,
         );
-        let cost = current_cost + last_commands.len() as i16;
+        let cost = current_cost + last_commands.0;
 
         if cost < *optimal_cost {
             *optimal_cost = cost;
@@ -444,15 +474,15 @@ fn generate_and_search_permutations(
         let temp_color = frame_buffer[temp_x as usize][temp_y as usize];
         let next_color = frame_buffer[coord.0 as usize][coord.1 as usize];
 
-        let commands = cache.get_result(
+        let command_cost = cache.get_cost(
             coord.0 - temp_x,
             coord.1 - temp_y,
             get_color_dist(temp_color, next_color),
             prev_cmd,
         );
 
-        let new_cost = current_cost + commands.len() as i16;
-        let new_prev_cmd = *commands.last().unwrap();
+        let new_cost = current_cost + command_cost.0;
+        let new_prev_cmd = command_cost.1;
         
         current_permutation.push(coord);
 
@@ -495,17 +525,17 @@ fn optimize_segment(
         let prev_prev_coord = visit_order[index - 1];
         let prev_color = frame_buffer[prev_coord.0 as usize][prev_coord.1 as usize];
         let prev_prev_color = frame_buffer[prev_prev_coord.0 as usize][prev_prev_coord.1 as usize];
-        let commands = cache.get_result(
+        let commands = cache.get_cost(
             prev_coord.0 - prev_prev_coord.0,
             prev_coord.1 - prev_prev_coord.1,
             get_color_dist(prev_prev_color, prev_color),
             C_A, //constant
         );
-        *commands.last().unwrap()
+        commands.1
     };
 
     let mut optimal_permutation: Option<Vec<(i16, i16)>> = None;
-    let mut optimal_cost = i16::MAX;
+    let mut optimal_cost = u16::MAX;
     let mut current_permutation = vec![];
 
     generate_and_search_permutations(
@@ -592,6 +622,7 @@ fn main() {
     let input_file = &args[1];
     let frames_per_command = if args.len() >= 3 { args[2].parse().unwrap_or(2) } else { 2 };
     let optimize = if args.len() >= 4 { args[3].parse().unwrap_or(5) } else { 5 };
+    let length_weight = if args.len() >= 5 { args[4].parse().unwrap_or(1.8) } else { 1.8 };
 
     // Open the input file
     let file = match File::open(input_file) {
@@ -654,8 +685,8 @@ fn main() {
                 *count += 1;
             }
         }
-        // Only change bg color if there is a clear winner over white.
-        if color_counts[&16] < (180*8/3) {
+        // Only change bg color if white is already the most common color
+        if color_counts[&16] < (180*8/2) {
             let mut max_count = 0;
             let mut max_index = 0;
             for (index, count) in color_counts {
@@ -664,7 +695,7 @@ fn main() {
                     max_index = index;
                 }
             }
-            if max_count > (180*8/10) { // Require at least 10% of pixels to be new color
+            if max_count > (180*8/20) { // Require at least 5% of pixels to be new color
                 bg_colors[x] = max_index;
             }
         }
@@ -787,7 +818,7 @@ fn main() {
     let mut next_print_percentage = 80;
     while num_to_draw > 0 {
         // Find the best next pixel to the current position that has not been drawn.  If None, break.
-        let next_coord = get_next_coord(temp_x, temp_y, temp_color, prev_cmd, &frame_buffer, &drawn_pixels, &mut cache);
+        let next_coord = get_next_coord(temp_x, temp_y, temp_color, prev_cmd, &frame_buffer, &drawn_pixels, &mut cache, length_weight);
         if next_coord.is_none() {
             println!("Warning: too few pixels drawn, but no next pixel found.");
             break;

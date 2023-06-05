@@ -10,11 +10,15 @@ gif2mm2 is a command-line tool that converts a gif to a sequence of button press
 
 ## Usage
 
-Usage: gif2mm2 <input_file> <frames_per_command> (optional, default 2).
+Usage: gif2mm2 <input_file> <frames_per_command> (optional, default 2) <optimization_amount> (int, optional, default 5) <freedom> (float, optional, default 1.8).
 
 The `input_file` should be a GIF image with dimensions of 320x180.
 
 It is recommended to leave `frames_per_command` as default unless you have a specific reason to use it.
+
+`optimization_level` controls how hard it will try to optimize the result.  This is very expensive for higher values, and should probably not exceed 12 (10 is already getting high).
+
+`freedom` controls how much the path tries to stick to the upper-left corner.  A value of 0 means the path will always fill in from the top left.  Higher values (up to around 10) let the path wander more.
 
 ## Implementation Details
 
