@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "gif2mm2"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "gif",
 ]

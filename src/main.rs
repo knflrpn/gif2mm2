@@ -725,6 +725,7 @@ fn main() {
         output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
         output_string.push_str(&format!("{{R1}} {}\n", frames_per_command));
         output_string.push_str(&format!("{{R}} {}\n", frames_per_command));
+        prev_cmd = C_R;
         let mut need_x = 0;
         current_x = 4;
         // Go over each column block
