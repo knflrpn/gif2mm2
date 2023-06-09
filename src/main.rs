@@ -685,19 +685,18 @@ fn main() {
                 *count += 1;
             }
         }
-        // Only change bg color if white is already the most common color
-        if color_counts[&16] < (180*8/2) {
-            let mut max_count = 0;
-            let mut max_index = 0;
-            for (index, count) in color_counts {
-                if count > max_count {
-                    max_count = count;
-                    max_index = index;
-                }
+        // Only change bg color if it will outweigh the destroyed white pixels.
+        let mut max_count = 0;
+        let mut max_index = 0;
+        let white_count = color_counts[&16];
+        for (index, count) in color_counts {
+            if count > max_count {
+                max_count = count;
+                max_index = index;
             }
-            if max_count > (180*8/20) { // Require at least 5% of pixels to be new color
-                bg_colors[x] = max_index;
-            }
+        }
+        if max_count > (white_count + white_count / 16)  {
+            bg_colors[x] = max_index;
         }
     }
 
@@ -711,6 +710,7 @@ fn main() {
 
     // Create output string
     let mut output_string = String::new();
+    output_string.push_str(&format!("; calculated with parameters: o-level {}, length weight {}\n", optimize, length_weight));
 
 
     // Add initial commands to the output string to fill any column blocks that aren't white.
@@ -850,7 +850,7 @@ fn main() {
     optimize_chunks(&mut visit_order, 30);
     // Go over the sequence of pixels to find isolated blocks and reinsert them at better locations.
     rearrange_pixels(&mut visit_order, 10, 6);
-    rearrange_pixels(&mut visit_order, 25, 6);
+    rearrange_pixels(&mut visit_order, 36, 6);
 
 
 
@@ -889,6 +889,10 @@ fn main() {
             index += length / 2;
         }                
     }
+
+    // Go over the sequence of pixels again to find isolated blocks and reinsert them at better locations.
+    rearrange_pixels(&mut visit_order, 10, 6);
+    rearrange_pixels(&mut visit_order, 25, 6);
 
     // Convert the sequence of coordinates to a sequence of commands and add to output string.
     let mut prev_cmd = 0;
