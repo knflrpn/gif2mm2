@@ -765,10 +765,10 @@ fn main() {
                 output_string.push_str(&format!("{{{}}} {}\n", cmd_to_string(C_A), frames_per_command));
                 // Hold A while moving cursor up or down for 90 frames.
                 if going_down {
-                    output_string.push_str(&"{A} 90 128 255\n");
+                    output_string.push_str(&"{A} (128 255) 90\n");
                     current_y = 179;
                 } else {
-                    output_string.push_str(&"{A} 90 128 0\n");
+                    output_string.push_str(&"{A} (128 0) 90\n");
                     current_y = 0;
                 }
                 prev_cmd = C_A;
@@ -821,7 +821,7 @@ fn main() {
         // Find the best next pixel to the current position that has not been drawn.  If None, break.
         let next_coord = get_next_coord(temp_x, temp_y, temp_color, prev_cmd, &frame_buffer, &drawn_pixels, &mut cache, length_weight);
         if next_coord.is_none() {
-            println!("Warning: too few pixels drawn, but no next pixel found.");
+            println!("Warning: no next pixel found in image data even though too few pixels have been placed.");
             break;
         }
         let next_coord = next_coord.unwrap();
