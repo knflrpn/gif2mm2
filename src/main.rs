@@ -611,6 +611,41 @@ fn optimize_chunks(
     *visit_order = new_visit_order;
 }
 
+fn colors_are_close(color1: (u8, u8, u8), color2: (u8, u8, u8), tolerance: u8) -> bool {
+    (color1.0 as i16 - color2.0 as i16).abs() <= tolerance as i16 &&
+    (color1.1 as i16 - color2.1 as i16).abs() <= tolerance as i16 &&
+    (color1.2 as i16 - color2.2 as i16).abs() <= tolerance as i16
+}
+
+fn find_closest_color(color: (u8, u8, u8), palette: &[(u8, u8, u8)], tolerance: u8) -> Option<u8> {
+    for (index, &palette_color) in palette.iter().enumerate() {
+        if colors_are_close(color, palette_color, tolerance) {
+            return Some(index as u8);
+        }
+    }
+    None
+}
+
+const PALETTE: &[(u8, u8, u8)] = &[
+    (0xfe, 0x00, 0x00),
+    (0xbc, 0x01, 0x01),
+    (0xff, 0xf5, 0xd3),
+    (0xad, 0x80, 0x47),
+    (0xfe, 0xff, 0x00),
+    (0xfd, 0xc2, 0x00),
+    (0x09, 0xff, 0x00),
+    (0x00, 0xbc, 0x05),
+    (0x00, 0xff, 0xff),
+    (0x0a, 0x00, 0xfe),
+    (0xbb, 0x62, 0xff),
+    (0x8a, 0x00, 0xbc),
+    (0xfe, 0xc2, 0xfe),
+    (0xba, 0x07, 0x92),
+    (0xbb, 0xbc, 0xba),
+    (0x00, 0x00, 0x00),
+    (0xff, 0xff, 0xff),
+];
+
 
 fn main() {
     // Parse command line arguments
@@ -621,7 +656,7 @@ fn main() {
     }
     let input_file = &args[1];
     let frames_per_command = if args.len() >= 3 { args[2].parse().unwrap_or(2) } else { 2 };
-    let optimize = if args.len() >= 4 { args[3].parse().unwrap_or(5) } else { 5 };
+    let optimize = if args.len() >= 4 { args[3].parse().unwrap_or(6) } else { 6 };
     let length_weight = if args.len() >= 5 { args[4].parse().unwrap_or(1.8) } else { 1.8 };
 
     // Open the input file
@@ -645,6 +680,10 @@ fn main() {
         }
     };
 
+    // Get the image's palette
+    let gif_palette = reader.global_palette().expect("No palette found");
+    let rgb_palette: Vec<(u8, u8, u8)> = gif_palette.chunks(3).map(|rgb| (rgb[0], rgb[1], rgb[2])).collect();
+
     // Read the first frame
     let frame = match reader.read_next_frame() {
         Ok(Some(f)) => f,
@@ -658,6 +697,15 @@ fn main() {
         }
     };
 
+    // Map the image's colors to the Mario Maker comment palette
+    let mut mapping_table = Vec::new();
+    for color in rgb_palette {
+        let closest_color_index = find_closest_color(color, &PALETTE, 10)
+            .expect("Image contains colors that aren't in the Mario Maker comment system.");
+        mapping_table.push(closest_color_index);
+    }
+    println!("{:?}", mapping_table);
+
     // Verify image dimensions
     if (frame.width != 320) || (frame.height != 180) {
         eprintln!("Image wrong size. Rejected.");
@@ -668,10 +716,10 @@ fn main() {
     let mut frame_buffer = [[0u8; 180]; 320];
     for x in 0..320 {
         for y in 0..180 {
-            frame_buffer[x][y] = frame.buffer[y*320 + x];
+            frame_buffer[x][y] = mapping_table[frame.buffer[y*320 + x] as usize];
         }
     }
-
+    
     // Determine most common background color for each set of eight columns.
     let mut bg_colors: [u8; 40] = [16; 40]; // Default to white
     for x in 0..40 { // Image is 320 wide, so 40 sets of 8 columns
