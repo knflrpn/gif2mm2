@@ -700,11 +700,10 @@ fn main() {
     // Map the image's colors to the Mario Maker comment palette
     let mut mapping_table = Vec::new();
     for color in rgb_palette {
-        let closest_color_index = find_closest_color(color, &PALETTE, 10)
-            .expect("Image contains colors that aren't in the Mario Maker comment system.");
+        let closest_color_index = find_closest_color(color, &PALETTE, 20)
+            .unwrap_or(16);
         mapping_table.push(closest_color_index);
     }
-    println!("{:?}", mapping_table);
 
     // Verify image dimensions
     if (frame.width != 320) || (frame.height != 180) {
