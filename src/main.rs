@@ -1,9 +1,11 @@
-// This program converts a GIF file to a sequence of commands for the SwiCC device
+// This program converts an image to a sequence of commands for the SwiCC device
 // to draw as a comment in Super Mario Maker 2.
+
+extern crate image;
+use image::{GenericImageView};
 
 use std::collections::HashMap;
 use std::env;
-use std::fs::{File};
 use std::path::{Path};
 use std::io::{BufWriter, Write};
 
@@ -611,19 +613,27 @@ fn optimize_chunks(
     *visit_order = new_visit_order;
 }
 
-fn colors_are_close(color1: (u8, u8, u8), color2: (u8, u8, u8), tolerance: u8) -> bool {
-    (color1.0 as i16 - color2.0 as i16).abs() <= tolerance as i16 &&
-    (color1.1 as i16 - color2.1 as i16).abs() <= tolerance as i16 &&
-    (color1.2 as i16 - color2.2 as i16).abs() <= tolerance as i16
-}
+fn find_closest_color(color: (u8, u8, u8), palette: &[(u8, u8, u8)]) -> u8 {
+    let mut closest_index = 0;
+    let mut closest_distance = u32::MAX;
 
-fn find_closest_color(color: (u8, u8, u8), palette: &[(u8, u8, u8)], tolerance: u8) -> Option<u8> {
     for (index, &palette_color) in palette.iter().enumerate() {
-        if colors_are_close(color, palette_color, tolerance) {
-            return Some(index as u8);
+        let distance = color_distance_squared(color, palette_color);
+        if distance < closest_distance {
+            closest_distance = distance;
+            closest_index = index;
         }
     }
-    None
+
+    closest_index as u8
+}
+
+fn color_distance_squared(c1: (u8, u8, u8), c2: (u8, u8, u8)) -> u32 {
+    let r_diff = c1.0 as i32 - c2.0 as i32;
+    let g_diff = c1.1 as i32 - c2.1 as i32;
+    let b_diff = c1.2 as i32 - c2.2 as i32;
+
+    (r_diff * r_diff + g_diff * g_diff + b_diff * b_diff) as u32
 }
 
 const PALETTE: &[(u8, u8, u8)] = &[
@@ -658,67 +668,70 @@ fn main() {
     let frames_per_command = if args.len() >= 3 { args[2].parse().unwrap_or(2) } else { 2 };
     let optimize = if args.len() >= 4 { args[3].parse().unwrap_or(6) } else { 6 };
     let length_weight = if args.len() >= 5 { args[4].parse().unwrap_or(1.8) } else { 1.8 };
-
-    // Open the input file
-    let file = match File::open(input_file) {
-        Ok(f) => f,
+    
+    let img = match image::open(input_file) {
+        Ok(i) => i,
         Err(e) => {
             eprintln!("Error opening file: {}", e);
             return;
         }
     };
 
-    // Configure the decoder such that it will expand the image to indexed color.
-    let mut decoder = gif::DecodeOptions::new();
-    decoder.set_color_output(gif::ColorOutput::Indexed);
-    // Read the file header
-    let mut reader = match decoder.read_info(file) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error reading file header: {}", e);
-            return;
-        }
-    };
+    let (width, height) = img.dimensions();
 
-    // Get the image's palette
-    let gif_palette = reader.global_palette().expect("No palette found");
-    let rgb_palette: Vec<(u8, u8, u8)> = gif_palette.chunks(3).map(|rgb| (rgb[0], rgb[1], rgb[2])).collect();
-
-    // Read the first frame
-    let frame = match reader.read_next_frame() {
-        Ok(Some(f)) => f,
-        Ok(None) => {
-            eprintln!("No frames in file.");
-            return;
-        }
-        Err(e) => {
-            eprintln!("Error reading frame: {}", e);
-            return;
-        }
-    };
-
-    // Map the image's colors to the Mario Maker comment palette
-    let mut mapping_table = Vec::new();
-    for color in rgb_palette {
-        let closest_color_index = find_closest_color(color, &PALETTE, 20)
-            .unwrap_or(16);
-        mapping_table.push(closest_color_index);
-    }
-
-    // Verify image dimensions
-    if (frame.width != 320) || (frame.height != 180) {
-        eprintln!("Image wrong size. Rejected.");
-        return;
-    }
-
-	// Reformat frame buffer into a 2-D array for easier access.
+    const TARGET_WIDTH: u32 = 320;
+    const TARGET_HEIGHT: u32 = 180;
+    const FILL_COLOR_INDEX: u8 = 16;
+    // Create and initialize frame buffer (contains indexed colors)
     let mut frame_buffer = [[0u8; 180]; 320];
-    for x in 0..320 {
-        for y in 0..180 {
-            frame_buffer[x][y] = mapping_table[frame.buffer[y*320 + x] as usize];
+    for x in 0..TARGET_WIDTH {
+        for y in 0..TARGET_HEIGHT {
+            frame_buffer[x as usize][y as usize] = FILL_COLOR_INDEX;
+        }
+    }    
+
+    // Calculate the starting offsets for the source image and the frame buffer
+    let src_offset_x = if width > TARGET_WIDTH {
+        (width - TARGET_WIDTH) / 2
+    } else {
+        0
+    };
+    
+    let src_offset_y = if height > TARGET_HEIGHT {
+        (height - TARGET_HEIGHT) / 2
+    } else {
+        0
+    };
+    
+    let fb_offset_x = if width < TARGET_WIDTH {
+        (TARGET_WIDTH - width) / 2
+    } else {
+        0
+    };
+    
+    let fb_offset_y = if height < TARGET_HEIGHT {
+        (TARGET_HEIGHT - height) / 2
+    } else {
+        0
+    };
+    
+    // Iterate over the target region, adjusting for the offsets
+    for x in fb_offset_x..(TARGET_WIDTH - fb_offset_x) {
+        for y in fb_offset_y..(TARGET_HEIGHT - fb_offset_y) {
+            let src_x = x + src_offset_x - fb_offset_x;
+            let src_y = y + src_offset_y - fb_offset_y;
+    
+            if src_x < width && src_y < height {
+                let rgba = img.get_pixel(src_x, src_y);
+                let (r, g, b, _) = (rgba[0], rgba[1], rgba[2], rgba[3]);  // Ignore alpha channel
+                let closest_color_index = find_closest_color((r, g, b), &PALETTE);
+                frame_buffer[x as usize][y as usize] = closest_color_index;
+            } else {
+                frame_buffer[x as usize][y as usize] = FILL_COLOR_INDEX;
+            }
         }
     }
-    
+                
     // Determine most common background color for each set of eight columns.
     let mut bg_colors: [u8; 40] = [16; 40]; // Default to white
     for x in 0..40 { // Image is 320 wide, so 40 sets of 8 columns
