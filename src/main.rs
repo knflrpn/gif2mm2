@@ -665,7 +665,7 @@ const C_R2: u8 = 1 << 6;
 //
 
 /// Parse command‐line arguments.
-fn parse_args() -> (String, u32, u32, f32) {
+fn parse_args() -> (String, u32, u32) {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!(
@@ -681,16 +681,11 @@ fn parse_args() -> (String, u32, u32, f32) {
         2
     };
     let optimize = if args.len() >= 4 {
-        args[3].parse().unwrap_or(6)
+        args[3].parse().unwrap_or(12)
     } else {
         6
     };
-    let length_weight = if args.len() >= 5 {
-        args[4].parse().unwrap_or(1.8)
-    } else {
-        1.8
-    };
-    (input_file, frames_per_command, optimize, length_weight)
+    (input_file, frames_per_command, optimize)
 }
 
 /// Load the image (or exit on error)
@@ -1245,7 +1240,7 @@ fn generate_commands(
 //
 fn main() {
     // 1. Parse arguments.
-    let (input_file, frames_per_command, optimize, _length_weight) = parse_args();
+    let (input_file, frames_per_command, optimize) = parse_args();
     // We ignore any user–provided length weight and instead run trials
     // over the range 1.0 to 3.0 in increments of 0.1.
     
