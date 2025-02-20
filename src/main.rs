@@ -683,7 +683,7 @@ fn parse_args() -> (String, u32, u32) {
     let optimize = if args.len() >= 4 {
         args[3].parse().unwrap_or(12)
     } else {
-        6
+        12
     };
     (input_file, frames_per_command, optimize)
 }
@@ -951,7 +951,14 @@ fn apply_stripes(frame_buffer: &[[u8; 180]; 320], frames_per_command: u32) -> St
             output.push_str(&format!("{{L1}} {}\n", frames_per_command));
             output.push_str(&format!("{{}} {}\n", frames_per_command));
             prev_cmd = 0;
-
+            // If ending on the top edge, the cursor will actually be at y=1 after shrinking
+            if current_y == 0 {
+                current_y = 1;
+            }
+            // If ending on the left edge, the cursor will actually be at y=1 after shrinking
+            if current_x == 0 {
+                current_x = 1;
+            }
         }
         // Mark drawn pixels for vertical stripes.
         for x_outer in 0..40 {
@@ -1061,6 +1068,14 @@ fn apply_stripes(frame_buffer: &[[u8; 180]; 320], frames_per_command: u32) -> St
                 output.push_str(&format!("{{}} {}\n", frames_per_command));
             }
             prev_cmd = 0;
+            // If ending on the top edge, the cursor will actually be at y=1 after shrinking
+            if current_y == 0 {
+                current_y = 1;
+            }
+            // If ending on the left edge, the cursor will actually be at y=1 after shrinking
+            if current_x == 0 {
+                current_x = 1;
+            }
         }
         for (block, &stripe_color) in horizontal_bg_colors.iter().enumerate() {
             let (start_y, end_y) = if block < full_horizontal_blocks {
